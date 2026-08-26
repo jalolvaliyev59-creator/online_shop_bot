@@ -141,3 +141,41 @@ async def add_product(data: dict):
         )
         session.add(product)
         await session.commit()
+
+from app.models.order import Order
+
+
+async def add_category(name: str):
+    async with async_session() as session:
+        session.add(Category(name=name))
+        await session.commit()
+
+
+async def get_all_products():
+    async with async_session() as session:
+        result = await session.execute(select(Product))
+        return result.scalars().all()
+
+
+async def delete_product(product_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalars().first()
+        if product:
+            await session.delete(product)
+            await session.commit()
+
+
+async def get_all_orders():
+    async with async_session() as session:
+        result = await session.execute(select(Order).order_by(Order.id.desc()))
+        return result.scalars().all()
+
+
+async def update_order_status(order_id: int, status: str):
+    async with async_session() as session:
+        result = await session.execute(select(Order).where(Order.id == order_id))
+        order = result.scalars().first()
+        if order:
+            order.status = status
+            await session.commit()

@@ -31,3 +31,13 @@ def get_products_keyboard(products: list) -> InlineKeyboardMarkup:
     # Orqaga qaytish tugmasi
     keyboard.append([InlineKeyboardButton(text="⬅️ Kategoriyalarga qaytish", callback_data="back_to_categories")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+def get_products_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    # Mahsulot tugmalari...
+    
+    # Orqaga qaytish tugmasini qo'shamiz
+    keyboard.add(InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_categories"))
+    return keyboard
