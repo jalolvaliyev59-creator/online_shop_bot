@@ -177,13 +177,25 @@ async def process_address(message: Message, state: FSMContext) -> None:
         parse_mode="HTML"
     )
 
+from aiohttp import web
+import os
+
+async def handle_ping(request):
+    return web.Response(text="Bot is alive")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 async def main():
     await init_db()
     await add_initial_categories()
     await add_initial_products()
     print("Bot ishga tushdi...")
+    await start_web_server()
     await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    asyncio.run(main())
