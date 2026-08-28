@@ -10,3 +10,10 @@ class AddProduct(StatesGroup):
 
 class AddCategory(StatesGroup):
     name = State()
+
+class AddShop(StatesGroup):
+    name = State()
+    owner_id = State()
+class EditProduct(StatesGroup):
+    price = State()
+    quantity = State()

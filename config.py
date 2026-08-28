@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     BOT_TOKEN: str
-    DB_URL: str = "sqlite+aiosqlite:///database.db"
+    DB_URL = "postgresql+asyncpg://online_shop_db_m4w3_user:psFnrhcBbfTtuUbenVG298OZEZ8McGie@dpg-da8hladg1s2s739eqbj0-a.ohio-postgres.render.com/online_shop_db_m4w3"
     ADMIN_IDS: list[int] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(

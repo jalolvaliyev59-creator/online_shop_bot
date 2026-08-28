@@ -1,160 +1,120 @@
 from sqlalchemy import select
 from app.database.connection import async_session
 from app.models.product import Category, Product
-from app.models.cart import Cart
+from app.models.cart import CartItem
 from app.models.order import Order
 from app.models.order_item import OrderItem
+from app.models.shop import Shop
+from app.models.session import UserSession
 
-async def get_categories():
+
+# ================= DO'KON (SHOP) =================
+
+async def get_shop_by_code(start_code: str):
     async with async_session() as session:
-        result = await session.execute(select(Category))
+        result = await session.execute(select(Shop).where(Shop.start_code == start_code))
+        return result.scalars().first()
+
+
+async def get_shop_by_owner(owner_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Shop).where(Shop.owner_id == owner_id))
+        return result.scalars().first()
+
+
+async def get_shop_by_id(shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Shop).where(Shop.id == shop_id))
+        return result.scalars().first()
+
+
+async def get_all_shops():
+    async with async_session() as session:
+        result = await session.execute(select(Shop))
         return result.scalars().all()
 
-async def add_initial_categories():
-    async with async_session() as session:
-        existing = await session.execute(select(Category))
-        if existing.scalars().first():
-            return
-            
-        categories = [
-            Category(name="📱 Smartfonlar"),
-            Category(name="🎧 Aksessuarlar"),
-            Category(name="⌚ Gadjetlar")
-        ]
-        session.add_all(categories)
-        await session.commit()
 
-async def get_products_by_category(category_id: int):
+async def create_shop(name: str, owner_id: int, start_code: str):
+    async with async_session() as session:
+        shop = Shop(name=name, owner_id=owner_id, start_code=start_code)
+        session.add(shop)
+        await session.commit()
+        await session.refresh(shop)
+        return shop
+
+
+# ================= FOYDALANUVCHI SESSIYASI (qaysi do'konda turibdi) =================
+
+async def set_current_shop(telegram_id: int, shop_id: int):
     async with async_session() as session:
         result = await session.execute(
-            select(Product).where(Product.category_id == category_id)
+            select(UserSession).where(UserSession.telegram_id == telegram_id)
+        )
+        session_obj = result.scalars().first()
+        if session_obj:
+            session_obj.current_shop_id = shop_id
+        else:
+            session_obj = UserSession(telegram_id=telegram_id, current_shop_id=shop_id)
+            session.add(session_obj)
+        await session.commit()
+
+
+async def get_current_shop_id(telegram_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(UserSession).where(UserSession.telegram_id == telegram_id)
+        )
+        session_obj = result.scalars().first()
+        return session_obj.current_shop_id if session_obj else None
+
+
+# ================= KATEGORIYALAR =================
+
+async def get_categories(shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Category).where(Category.shop_id == shop_id))
+        return result.scalars().all()
+
+
+async def add_category(name: str, shop_id: int):
+    async with async_session() as session:
+        session.add(Category(name=name, shop_id=shop_id))
+        await session.commit()
+
+
+# ================= MAHSULOTLAR =================
+
+async def get_products_by_category(category_id: int, shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.category_id == category_id, Product.shop_id == shop_id)
         )
         return result.scalars().all()
 
+
 async def get_product_by_id(product_id: int):
-    """ID bo'yicha bitta mahsulotni topish"""
     async with async_session() as session:
         result = await session.execute(select(Product).where(Product.id == product_id))
         return result.scalars().first()
 
-async def add_initial_products():
-    async with async_session() as session:
-        existing = await session.execute(select(Product))
-        if existing.scalars().first():
-            return
-            
-        products = [
-            Product(name="iPhone 13", price=8500000, category_id=1, description="Holati ideal, xotirasi 128GB"),
-            Product(name="Samsung Galaxy S23", price=9000000, category_id=1, description="Yangi, qadoqda"),
-            Product(name="AirPods Pro 2", price=2500000, category_id=2, description="Original simsiz quloqchin"),
-            Product(name="Smart Watch 8", price=600000, category_id=3, description="Ajoyib aqlli soat")
-        ]
-        session.add_all(products)
-        await session.commit()
 
-async def add_to_cart(user_id: int, product_id: int):
-    """Mahsulotni savatchaga qo'shish yoki miqdorini oshirish"""
+async def get_all_products(shop_id: int):
     async with async_session() as session:
-        result = await session.execute(
-            select(Cart).where(Cart.user_id == user_id, Cart.product_id == product_id)
-        )
-        cart_item = result.scalars().first()
-        
-        if cart_item:
-            cart_item.quantity += 1
-        else:
-            cart_item = Cart(user_id=user_id, product_id=product_id, quantity=1)
-            session.add(cart_item)
-            
-        await session.commit()
+        result = await session.execute(select(Product).where(Product.shop_id == shop_id))
+        return result.scalars().all()
 
-async def get_user_cart(user_id: int):
-    """Foydalanuvchining savatchasidagi mahsulotlarni va ularning ma'lumotlarini olish"""
-    async with async_session() as session:
-        result = await session.execute(
-            select(Cart, Product)
-            .join(Product, Cart.product_id == Product.id)
-            .where(Cart.user_id == user_id)
-        )
-        return result.all()
 
-async def clear_cart(user_id: int):
-    """Foydalanuvchining savatchasini tozalash"""
-    async with async_session() as session:
-        result = await session.execute(select(Cart).where(Cart.user_id == user_id))
-        items = result.scalars().all()
-        for item in items:
-            await session.delete(item)
-        await session.commit()
-
-async def create_order_from_cart(user_id: int, phone: str, address: str):
-    """Savatchadagi mahsulotlardan buyurtma yaratish va savatchani bo'shatish"""
-    async with async_session() as session:
-        # 1. Savatchadagi mahsulotlarni olib kelamiz
-        result = await session.execute(
-            select(Cart, Product)
-            .join(Product, Cart.product_id == Product.id)
-            .where(Cart.user_id == user_id)
-        )
-        cart_items = result.all()
-        
-        if not cart_items:
-            return None
-            
-        # 2. Umumiy summani hisoblaymiz
-        total_sum = sum(product.price * cart.quantity for cart, product in cart_items)
-        
-        # 3. Yangi buyurtma yaratamiz (telefon va manzil bilan)
-        new_order = Order(
-            user_id=user_id, 
-            total_price=total_sum, 
-            status="Yangi",
-            payment_status="pending",
-            phone=phone,
-            delivery_address=address
-        )
-        session.add(new_order)
-        await session.flush() # ID olish uchun flush qilamiz
-        
-        # 4. Buyurtma elementlarini qo'shamiz va savatchani tozalaymiz
-        for cart, product in cart_items:
-            order_item = OrderItem(
-                order_id=new_order.id,
-                product_id=product.id,
-                quantity=cart.quantity,
-                price=product.price
-            )
-            session.add(order_item)
-            await session.delete(cart)
-            
-        await session.commit()
-        return new_order.id
-
-async def add_product(data: dict):
-    """Admin tomonidan yangi mahsulot qo'shish"""
+async def add_product(data: dict, shop_id: int):
     async with async_session() as session:
         product = Product(
             name=data["name"],
             description=data["description"],
-            price=float(data["price"]),
-            category_id=int(data["category_id"])
+            price=int(data["price"]),
+            category_id=int(data["category_id"]),
+            shop_id=shop_id
         )
         session.add(product)
         await session.commit()
-
-from app.models.order import Order
-
-
-async def add_category(name: str):
-    async with async_session() as session:
-        session.add(Category(name=name))
-        await session.commit()
-
-
-async def get_all_products():
-    async with async_session() as session:
-        result = await session.execute(select(Product))
-        return result.scalars().all()
 
 
 async def delete_product(product_id: int):
@@ -166,9 +126,96 @@ async def delete_product(product_id: int):
             await session.commit()
 
 
-async def get_all_orders():
+# ================= SAVAT =================
+
+async def add_to_cart(user_id: int, product_id: int, shop_id: int):
     async with async_session() as session:
-        result = await session.execute(select(Order).order_by(Order.id.desc()))
+        result = await session.execute(
+            select(CartItem).where(
+                CartItem.user_id == user_id,
+                CartItem.product_id == product_id,
+                CartItem.shop_id == shop_id
+            )
+        )
+        cart_item = result.scalars().first()
+
+        if cart_item:
+            cart_item.quantity += 1
+        else:
+            cart_item = CartItem(user_id=user_id, product_id=product_id, shop_id=shop_id, quantity=1)
+            session.add(cart_item)
+
+        await session.commit()
+
+
+async def get_user_cart(user_id: int, shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(CartItem, Product)
+            .join(Product, CartItem.product_id == Product.id)
+            .where(CartItem.user_id == user_id, CartItem.shop_id == shop_id)
+        )
+        return result.all()
+
+
+async def clear_cart(user_id: int, shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(CartItem).where(CartItem.user_id == user_id, CartItem.shop_id == shop_id)
+        )
+        items = result.scalars().all()
+        for item in items:
+            await session.delete(item)
+        await session.commit()
+
+
+# ================= BUYURTMALAR =================
+
+async def create_order_from_cart(user_id: int, shop_id: int, phone: str, address: str):
+    async with async_session() as session:
+        result = await session.execute(
+            select(CartItem, Product)
+            .join(Product, CartItem.product_id == Product.id)
+            .where(CartItem.user_id == user_id, CartItem.shop_id == shop_id)
+        )
+        cart_items = result.all()
+
+        if not cart_items:
+            return None
+
+        total_sum = sum(product.price * cart.quantity for cart, product in cart_items)
+
+        new_order = Order(
+            user_id=user_id,
+            shop_id=shop_id,
+            total_price=total_sum,
+            status="Yangi",
+            payment_status="pending",
+            phone=phone,
+            delivery_address=address
+        )
+        session.add(new_order)
+        await session.flush()
+
+        for cart, product in cart_items:
+            order_item = OrderItem(
+                order_id=new_order.id,
+                product_id=product.id,
+                quantity=cart.quantity,
+                price=product.price
+            )
+            session.add(order_item)
+            await session.delete(cart)
+
+        await session.commit()
+        return new_order.id
+
+
+async def get_all_orders(shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order).where(Order.shop_id == shop_id).order_by(Order.id.desc())
+        )
         return result.scalars().all()
 
 
@@ -178,4 +225,21 @@ async def update_order_status(order_id: int, status: str):
         order = result.scalars().first()
         if order:
             order.status = status
+            await session.commit()
+
+async def update_product_price(product_id: int, new_price: int):
+    async with async_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalars().first()
+        if product:
+            product.price = new_price
+            await session.commit()
+
+
+async def update_product_quantity(product_id: int, new_quantity: int):
+    async with async_session() as session:
+        result = await session.execute(select(Product).where(Product.id == product_id))
+        product = result.scalars().first()
+        if product:
+            product.quantity = new_quantity
             await session.commit()

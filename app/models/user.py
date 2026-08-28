@@ -1,7 +1,8 @@
 from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, String, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 from app.database.base import Base
+
 
 class User(Base):
     __tablename__ = "users"
@@ -12,6 +13,3 @@ class User(Base):
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     language: Mapped[str] = mapped_column(String(5), default="uz")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-    orders: Mapped[list["Order"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    cart_items: Mapped[list["CartItem"]] = relationship(back_populates="user", cascade="all, delete-orphan")

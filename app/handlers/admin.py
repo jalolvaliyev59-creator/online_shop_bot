@@ -5,54 +5,75 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 
-from config import settings
 from app.database.requests import (
-    get_categories, add_product, add_category,
+    get_shop_by_owner, get_categories, add_product, add_category,
     get_all_products, delete_product,
-    get_all_orders, update_order_status
+    get_all_orders, update_order_status,
+    update_product_price, update_product_quantity
 )
-from app.states.admin import AddProduct, AddCategory
-from app.keyboards.reply import get_main_menu
+from app.states.admin import AddProduct, AddCategory, EditProduct
 
 admin_router = Router()
+
+MENU_TEXTS = {
+    "➕ Mahsulot qo'shish", "📋 Mahsulotlar", "📁 Kategoriya qo'shish", "📦 Buyurtmalar"
+}
 
 
 def admin_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Mahsulot qo'shish"), KeyboardButton(text="📋 Mahsulotlar")],
-            [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="🛒 Buyurtmalar")],
-            [KeyboardButton(text="🔙 Asosiy menyu")]
+            [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="📦 Buyurtmalar")]
         ],
         resize_keyboard=True
     )
 
 
-@admin_router.message(F.text == "👨‍💼 Admin panel")
-async def admin_panel(message: Message):
-    if message.from_user.id not in settings.ADMIN_IDS:
-        await message.answer("Sizda bu bo'limga kirish huquqi yo'q! ❌")
-        return
-    await message.answer(
-        "👨‍💼 Admin panelga xush kelibsiz!\n\nKerakli amalni tanlang:",
-        reply_markup=admin_menu_keyboard()
+def cancel_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Bekor qilish")]],
+        resize_keyboard=True
     )
 
 
-@admin_router.message(F.text == "🔙 Asosiy menyu")
-async def back_to_main(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Asosiy menyu:", reply_markup=get_main_menu(message.from_user.id))
+async def get_owner_shop(telegram_id: int):
+    return await get_shop_by_owner(telegram_id)
+
+
+# ================= HAR QANDAY HOLATDA MENYU TUGMASI BOSILSA — BEKOR QILISH =================
+
+@admin_router.message(F.text.in_(MENU_TEXTS | {"❌ Bekor qilish"}))
+async def cancel_any_state(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        await state.clear()
+        if message.text == "❌ Bekor qilish":
+            await message.answer("Bekor qilindi.", reply_markup=admin_menu_keyboard())
+            return
+    # Davom etamiz — pastdagi tegishli handlerlar o'zi ishlaydi
+    await route_menu_text(message, state)
+
+
+async def route_menu_text(message: Message, state: FSMContext):
+    shop = await get_owner_shop(message.from_user.id)
+    if not shop:
+        return
+
+    if message.text == "➕ Mahsulot qo'shish":
+        await start_add_product(message, state, shop)
+    elif message.text == "📋 Mahsulotlar":
+        await list_products(message, shop)
+    elif message.text == "📁 Kategoriya qo'shish":
+        await start_add_category(message, state)
+    elif message.text == "📦 Buyurtmalar":
+        await list_orders(message, shop)
 
 
 # ================= MAHSULOT QO'SHISH =================
 
-@admin_router.message(F.text == "➕ Mahsulot qo'shish")
-async def start_add_product(message: Message, state: FSMContext):
-    if message.from_user.id not in settings.ADMIN_IDS:
-        return
-
-    categories = await get_categories()
+async def start_add_product(message: Message, state: FSMContext, shop):
+    categories = await get_categories(shop.id)
     if not categories:
         await message.answer("Avval kategoriyalar yaratilishi kerak!")
         return
@@ -72,7 +93,7 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     category_id = int(callback.data.split("_")[2])
     await state.update_data(category_id=category_id)
     await state.set_state(AddProduct.name)
-    await callback.message.answer("Yangi mahsulot nomini kiriting:")
+    await callback.message.answer("Yangi mahsulot nomini kiriting:", reply_markup=cancel_keyboard())
     await callback.answer()
 
 
@@ -96,9 +117,15 @@ async def process_price(message: Message, state: FSMContext):
         await message.answer("Iltimos, narxni faqat raqamlarda kiriting!")
         return
 
+    shop = await get_owner_shop(message.from_user.id)
+    if not shop:
+        await state.clear()
+        return
+
     await state.update_data(price=int(message.text))
     data = await state.get_data()
-    await add_product(data)
+
+    await add_product(data, shop.id)
     await state.clear()
 
     await message.answer("✅ Mahsulot muvaffaqiyatli qo'shildi!", reply_markup=admin_menu_keyboard())
@@ -106,29 +133,27 @@ async def process_price(message: Message, state: FSMContext):
 
 # ================= KATEGORIYA QO'SHISH =================
 
-@admin_router.message(F.text == "📁 Kategoriya qo'shish")
 async def start_add_category(message: Message, state: FSMContext):
-    if message.from_user.id not in settings.ADMIN_IDS:
-        return
     await state.set_state(AddCategory.name)
-    await message.answer("Yangi kategoriya nomini kiriting:")
+    await message.answer("Yangi kategoriya nomini kiriting:", reply_markup=cancel_keyboard())
 
 
 @admin_router.message(AddCategory.name)
 async def process_category_name(message: Message, state: FSMContext):
-    await add_category(message.text)
+    shop = await get_owner_shop(message.from_user.id)
+    if not shop:
+        await state.clear()
+        return
+
+    await add_category(message.text, shop.id)
     await state.clear()
     await message.answer(f"✅ '{message.text}' kategoriyasi qo'shildi!", reply_markup=admin_menu_keyboard())
 
 
-# ================= MAHSULOTLAR RO'YXATI (O'CHIRISH) =================
+# ================= MAHSULOTLAR RO'YXATI (O'CHIRISH / TAHRIRLASH) =================
 
-@admin_router.message(F.text == "📋 Mahsulotlar")
-async def list_products(message: Message):
-    if message.from_user.id not in settings.ADMIN_IDS:
-        return
-
-    products = await get_all_products()
+async def list_products(message: Message, shop):
+    products = await get_all_products(shop.id)
     if not products:
         await message.answer("Hozircha mahsulotlar yo'q.")
         return
@@ -136,6 +161,10 @@ async def list_products(message: Message):
     for product in products:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="💰 Narxni o'zgartirish", callback_data=f"edit_price_{product.id}"),
+                    InlineKeyboardButton(text="📦 Qoldiqni o'zgartirish", callback_data=f"edit_qty_{product.id}")
+                ],
                 [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"del_prod_{product.id}")]
             ]
         )
@@ -151,17 +180,55 @@ async def delete_product_handler(callback: CallbackQuery):
     await callback.answer()
 
 
+@admin_router.callback_query(F.data.startswith("edit_price_"))
+async def start_edit_price(callback: CallbackQuery, state: FSMContext):
+    product_id = int(callback.data.split("_")[2])
+    await state.update_data(product_id=product_id)
+    await state.set_state(EditProduct.price)
+    await callback.message.answer("Yangi narxni kiriting (faqat raqamlarda):", reply_markup=cancel_keyboard())
+    await callback.answer()
+
+
+@admin_router.message(EditProduct.price)
+async def process_edit_price(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Iltimos, faqat raqam kiriting!")
+        return
+
+    data = await state.get_data()
+    await update_product_price(data["product_id"], int(message.text))
+    await state.clear()
+    await message.answer("✅ Narx yangilandi!", reply_markup=admin_menu_keyboard())
+
+
+@admin_router.callback_query(F.data.startswith("edit_qty_"))
+async def start_edit_qty(callback: CallbackQuery, state: FSMContext):
+    product_id = int(callback.data.split("_")[2])
+    await state.update_data(product_id=product_id)
+    await state.set_state(EditProduct.quantity)
+    await callback.message.answer("Yangi qoldiq miqdorini kiriting:", reply_markup=cancel_keyboard())
+    await callback.answer()
+
+
+@admin_router.message(EditProduct.quantity)
+async def process_edit_qty(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Iltimos, faqat raqam kiriting!")
+        return
+
+    data = await state.get_data()
+    await update_product_quantity(data["product_id"], int(message.text))
+    await state.clear()
+    await message.answer("✅ Qoldiq yangilandi!", reply_markup=admin_menu_keyboard())
+
+
 # ================= BUYURTMALAR =================
 
 STATUS_OPTIONS = ["Yangi", "Tayyorlanmoqda", "Yetkazilmoqda", "Yetkazildi", "Bekor qilindi"]
 
 
-@admin_router.message(F.text == "🛒 Buyurtmalar")
-async def list_orders(message: Message):
-    if message.from_user.id not in settings.ADMIN_IDS:
-        return
-
-    orders = await get_all_orders()
+async def list_orders(message: Message, shop):
+    orders = await get_all_orders(shop.id)
     if not orders:
         await message.answer("Hozircha buyurtmalar yo'q.")
         return
