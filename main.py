@@ -23,6 +23,7 @@ from app.database.requests import (
     get_cart_item_by_id
 )
 
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ErrorEvent
 from config import settings
 from app.database.connection import init_db
