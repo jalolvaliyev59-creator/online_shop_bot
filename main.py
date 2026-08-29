@@ -17,6 +17,8 @@ from aiogram.types import (
     InlineKeyboardButton
 )
 
+
+from aiogram.types import ErrorEvent
 from config import settings
 from app.database.connection import init_db
 from app.database.requests import (
@@ -40,7 +42,22 @@ from app.states.admin import AddShop
 
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher()
+from app.middlewares.throttling import ThrottlingMiddleware
+
+dp.message.middleware(ThrottlingMiddleware())
+dp.callback_query.middleware(ThrottlingMiddleware())
 dp.include_router(admin_router)
+@dp.errors()
+async def global_error_handler(event: ErrorEvent):
+    logging.exception(f"Xatolik yuz berdi: {event.exception}")
+    try:
+        if event.update.message:
+            await event.update.message.answer("⚠️ Kutilmagan xatolik yuz berdi. Iltimos, qayta urinib ko'ring yoki /start bosing.")
+        elif event.update.callback_query:
+            await event.update.callback_query.answer("⚠️ Xatolik yuz berdi, qayta urinib ko'ring.", show_alert=True)
+    except Exception:
+        pass
+    return True
 
 
 # ================= YORDAMCHI FUNKSIYALAR =================
