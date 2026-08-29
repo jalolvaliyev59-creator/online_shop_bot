@@ -102,7 +102,9 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
             return
 
         # Do'kon egasimi?
+                # Do'kon egasimi?
         if shop.owner_id == telegram_id:
+            await set_current_shop(telegram_id, shop.id)
             await message.answer(
                 f"👨‍💼 Assalomu alaykum! Siz <b>{shop.name}</b> do'konining egasisiz.\n\nAdmin panelga xush kelibsiz!",
                 reply_markup=shop_admin_menu(),
@@ -223,7 +225,8 @@ def shop_admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Mahsulot qo'shish"), KeyboardButton(text="📋 Mahsulotlar")],
-            [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="📦 Buyurtmalar")]
+            [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="📦 Buyurtmalar")],
+            [KeyboardButton(text="🛍️ Mijoz sifatida ko'rish")]
         ],
         resize_keyboard=True
     )
@@ -601,6 +604,94 @@ async def refresh_cart_message(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows), parse_mode="HTML")
     await callback.answer()
 
+
+
+
+from app.database.requests import delete_shop as db_delete_shop
+
+
+# ================= MIJOZ SIFATIDA KO'RISH (egasi/admin uchun) =================
+
+@dp.message(F.text == "🛍️ Mijoz sifatida ko'rish")
+async def switch_to_customer_view(message: Message) -> None:
+    await message.answer(
+        "🛍️ Endi mijoz rejimidasiz. Katalogni ko'rishingiz mumkin.\n\n"
+        "Admin panelga qaytish uchun do'kon havolangizni qayta bosing.",
+        reply_markup=get_main_menu()
+    )
+
+
+# ================= DO'KONNI O'CHIRISH (faqat bosh admin) =================
+
+class DeleteShopState:
+    from aiogram.fsm.state import State, StatesGroup
+
+    class Delete(StatesGroup):
+        code = State()
+
+
+@dp.message(F.text == "🗑 Do'konni o'chirish")
+async def start_delete_shop(message: Message, state: FSMContext):
+    if not is_super_admin(message.from_user.id):
+        return
+
+    shops = await get_all_shops()
+    if not shops:
+        await message.answer("Hozircha do'konlar yo'q.")
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"{shop.name} ({shop.start_code})", callback_data=f"delshop_{shop.id}")]
+            for shop in shops
+        ]
+    )
+    await message.answer("O'chirmoqchi bo'lgan do'konni tanlang:", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("delshop_"))
+async def confirm_delete_shop(callback: CallbackQuery):
+    if not is_super_admin(callback.from_user.id):
+        return
+
+    shop_id = int(callback.data.split("_")[1])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha, o'chirish", callback_data=f"delshopconfirm_{shop_id}"),
+                InlineKeyboardButton(text="❌ Bekor qilish", callback_data="delshopcancel")
+            ]
+        ]
+    )
+    await callback.message.edit_text(
+        "⚠️ Diqqat! Bu do'kon va uning barcha mahsulotlari, kategoriyalari, buyurtmalari butunlay o'chib ketadi.\n\nRostdan ham o'chirmoqchimisiz?",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("delshopconfirm_"))
+async def do_delete_shop(callback: CallbackQuery):
+    if not is_super_admin(callback.from_user.id):
+        return
+
+    shop_id = int(callback.data.split("_")[1])
+    success = await db_delete_shop(shop_id)
+
+    if success:
+        await callback.message.edit_text("✅ Do'kon muvaffaqiyatli o'chirildi.")
+    else:
+        await callback.message.edit_text("❌ Do'kon topilmadi.")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "delshopcancel")
+async def cancel_delete_shop(callback: CallbackQuery):
+    await callback.message.edit_text("Bekor qilindi.")
+    await callback.answer()
+
+
+    
 
 # ================= WEB SERVER (Render uchun) =================
 

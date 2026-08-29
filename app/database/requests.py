@@ -287,3 +287,15 @@ async def get_cart_item_by_id(cart_id: int):
             select(CartItem, Product).join(Product, CartItem.product_id == Product.id).where(CartItem.id == cart_id)
         )
         return result.first()
+
+
+
+async def delete_shop(shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Shop).where(Shop.id == shop_id))
+        shop = result.scalars().first()
+        if shop:
+            await session.delete(shop)
+            await session.commit()
+            return True
+        return False
