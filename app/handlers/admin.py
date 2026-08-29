@@ -9,21 +9,10 @@ from app.database.requests import (
     get_shop_by_owner, get_categories, add_product, add_category,
     get_all_products, delete_product,
     get_all_orders, update_order_status,
-    update_product_price, update_product_quantity
-)
-
-
-from app.states.admin import AddProduct, AddCategory, EditProduct, AddPromocode
-from app.database.requests import (
-    get_shop_by_owner, get_categories, add_product, add_category,
-    get_all_products, delete_product,
-    get_all_orders, update_order_status,
     update_product_price, update_product_quantity,
     add_promocode, get_shop_stats
 )
-
-
-from app.states.admin import AddProduct, AddCategory, EditProduct
+from app.states.admin import AddProduct, AddCategory, EditProduct, AddPromocode
 
 admin_router = Router()
 
@@ -66,7 +55,6 @@ async def cancel_any_state(message: Message, state: FSMContext):
         if message.text == "❌ Bekor qilish":
             await message.answer("Bekor qilindi.", reply_markup=admin_menu_keyboard())
             return
-    # Davom etamiz — pastdagi tegishli handlerlar o'zi ishlaydi
     await route_menu_text(message, state)
 
 
@@ -242,7 +230,13 @@ async def process_edit_qty(message: Message, state: FSMContext):
 
 # ================= BUYURTMALAR =================
 
-STATUS_OPTIONS = ["Yangi", "Tayyorlanmoqda", "Yetkazilmoqda", "Yetkazildi", "Bekor qilindi"]
+STATUS_OPTIONS = {
+    "1": "Yangi",
+    "2": "Tayyorlanmoqda",
+    "3": "Yetkazilmoqda",
+    "4": "Yetkazildi",
+    "5": "Bekor qilindi"
+}
 
 
 async def list_orders(message: Message, shop):
@@ -254,8 +248,8 @@ async def list_orders(message: Message, shop):
     for order in orders[:10]:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=status, callback_data=f"ordstat_{order.id}_{status}")]
-                for status in STATUS_OPTIONS
+                [InlineKeyboardButton(text=status_name, callback_data=f"ordstat_{order.id}_{status_id}")]
+                for status_id, status_name in STATUS_OPTIONS.items()
             ]
         )
         text = (
@@ -272,16 +266,24 @@ async def list_orders(message: Message, shop):
 async def change_order_status(callback: CallbackQuery):
     parts = callback.data.split("_")
     order_id = int(parts[1])
-    new_status = parts[2]
+    status_id = parts[2]
+    
+    new_status = STATUS_OPTIONS.get(status_id)
+    if not new_status:
+        await callback.answer("Xatolik yuz berdi!", show_alert=True)
+        return
+
     await update_order_status(order_id, new_status)
     await callback.answer(f"Holat yangilandi: {new_status}", show_alert=True)
-
-
-
-
-
-
-
+    
+    try:
+        old_text = callback.message.text
+        updated_text = "\n".join(
+            [f"📌 Holat: {new_status}" if line.startswith("📌 Holat:") else line for line in old_text.split("\n")]
+        )
+        await callback.message.edit_text(updated_text, reply_markup=callback.message.reply_markup)
+    except Exception:
+        pass
 
 
 # ================= PROMOKOD =================

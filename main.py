@@ -60,7 +60,7 @@ router = Router()
 
 dp.message.middleware(ThrottlingMiddleware())
 dp.callback_query.middleware(ThrottlingMiddleware())
-dp.include_router(admin_router)
+
 dp.include_router(router)
 
 @dp.errors()
@@ -98,28 +98,162 @@ async def get_active_shop_id(telegram_id: int):
 
 # ================= /start (asosiy kirish nuqtasi) =================
 
+import asyncio
+import logging
+import sys
+import os
+
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import CommandStart, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ErrorEvent
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiohttp import web
+from sqlalchemy import select
+
+from config import settings
+from app.database.connection import init_db, async_session
+from app.middlewares.throttling import ThrottlingMiddleware
+from app.handlers.admin import admin_router
+from app.states.order import OrderState
+from app.states.admin import AddShop
+
+from app.models.shop import Shop
+from app.models.feedback import Feedback
+
+from app.database.requests import (
+    search_products,
+    get_user_orders,
+    update_cart_quantity,
+    get_cart_item_by_id,
+    toggle_wishlist,
+    get_wishlist,
+    get_shop_by_code,
+    get_shop_by_id,
+    get_all_shops,
+    create_shop,
+    set_current_shop,
+    get_current_shop_id,
+    get_categories,
+    get_products_by_category,
+    get_product_by_id,
+    add_to_cart,
+    get_user_cart,
+    clear_cart,
+    create_order_from_cart,
+    get_last_address
+)
+
+bot = Bot(token=settings.BOT_TOKEN)
+dp = Dispatcher()
+router = Router()
+
+dp.message.middleware(ThrottlingMiddleware())
+dp.callback_query.middleware(ThrottlingMiddleware())
+dp.include_router(admin_router)
+dp.include_router(router)
+
+@dp.errors()
+async def global_error_handler(event: ErrorEvent):
+    logging.exception(f"Xatolik yuz berdi: {event.exception}")
+    try:
+        if event.update.message:
+            await event.update.message.answer("⚠️ Kutilmagan xatolik yuz berdi. Iltimos, qayta urinib ko'ring yoki /start bosing.")
+        elif event.update.callback_query:
+            await event.update.callback_query.answer("⚠️ Xatolik yuz berdi, qayta urinib ko'ring.", show_alert=True)
+    except Exception:
+        pass
+    return True
+
+
+def get_main_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🛍️ Katalog"), KeyboardButton(text="🛒 Savatcha")],
+            [KeyboardButton(text="🔍 Qidiruv"), KeyboardButton(text="📦 Buyurtmalarim")],
+            [KeyboardButton(text="❤️ Sevimlilar"), KeyboardButton(text="📞 Biz bilan bog'lanish")]
+        ],
+        resize_keyboard=True
+    )
+
+def shop_admin_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Mahsulot qo'shish"), KeyboardButton(text="📋 Mahsulotlar")],
+            [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="📦 Buyurtmalar")],
+            [KeyboardButton(text="🎟 Promokod qo'shish"), KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="🛍️ Mijoz sifatida ko'rish")]
+        ],
+        resize_keyboard=True
+    )
+
+def super_admin_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏪 Do'konlar ro'yxati")],
+            [KeyboardButton(text="➕ Yangi do'kon yaratish")]
+        ],
+        resize_keyboard=True
+    )
+
+def is_super_admin(telegram_id: int) -> bool:
+    return telegram_id in settings.ADMIN_IDS
+
+async def get_active_shop_id(telegram_id: int):
+    return await get_current_shop_id(telegram_id)
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext) -> None:
     await state.clear()
     telegram_id = message.from_user.id
-    start_code = command.args
+    
+    # O'z Telegram IDingizni shu yerga yozing (avtomatik admin bo'lib kirishi uchun)
+    MY_TELEGRAM_ID = 8556213613  # Botingizdagi ID yoki o'z ID raqamingiz
+    
+    if telegram_id == MY_TELEGRAM_ID or is_super_admin(telegram_id):
+        # Agar bazada do'kon bo'lmasa, avtomatik bitta do'kon yaratib qo'yamiz
+        async with async_session() as session:
+            result = await session.execute(select(Shop).where(Shop.owner_id == telegram_id))
+            shop = result.scalar_one_or_none()
+            if not shop:
+                shop = Shop(name="Mening Do'konim", owner_id=telegram_id, start_code=f"shop{telegram_id}")
+                session.add(shop)
+                await session.commit()
+            await set_current_shop(telegram_id, shop.id)
+            
+        await message.answer(
+            "👨‍💼 Assalomu alaykum! Siz do'kon egasisiz.\n\nAdmin panel:",
+            reply_markup=shop_admin_menu(),
+            parse_mode="HTML"
+        )
+        return
 
+    start_code = command.args
     if start_code:
         shop = await get_shop_by_code(start_code)
         if not shop:
             await message.answer("❌ Bunday do'kon topilmadi. Havola noto'g'ri bo'lishi mumkin.")
             return
 
+        await set_current_shop(telegram_id, shop.id)
         if shop.owner_id == telegram_id:
-            await set_current_shop(telegram_id, shop.id)
             await message.answer(
-                f"👨‍💼 Assalomu alaykum! Siz <b>{shop.name}</b> do'konining egasisiz.\n\nAdmin panelga xush kelibsiz!",
+                f"👨‍💼 Assalomu alaykum! Siz <b>{shop.name}</b> do'konining egasisiz.",
                 reply_markup=shop_admin_menu(),
                 parse_mode="HTML"
             )
             return
 
-        await set_current_shop(telegram_id, shop.id)
         await message.answer(
             f"Assalomu alaykum, {message.from_user.first_name}!\n\n"
             f"🏪 <b>{shop.name}</b> do'koniga xush kelibsiz!\nKerakli bo'limni tanlang:",
@@ -128,31 +262,94 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
         )
         return
 
-    if is_super_admin(telegram_id):
-        await message.answer(
-            "👑 Assalomu alaykum, bosh admin!\n\nKerakli amalni tanlang:",
-            reply_markup=super_admin_menu()
-        )
-        return
-
-    shop_id = await get_active_shop_id(telegram_id)
-    if shop_id:
-        shop = await get_shop_by_id(shop_id)
-        if shop:
-            await message.answer(
-                f"Xush kelibsiz, {message.from_user.first_name}!\n\n"
-                f"🏪 <b>{shop.name}</b>\nKerakli bo'limni tanlang:",
-                reply_markup=get_main_menu(),
-                parse_mode="HTML"
-            )
-            return
-
     await message.answer(
         "Assalomu alaykum! 👋\n\n"
-        "Bu bot faqat do'kon havolasi orqali ishlaydi. "
-        "Iltimos, sizga berilgan do'kon havolasidan kiring."
+        "Do'konga kirish uchun havoladan foydalaning yoki /start buyrug'ini bosing."
     )
 
+
+# Katalog, savatcha va buyurtma funksiyalari
+@dp.message(F.text == "🛍️ Katalog")
+async def show_categories(message: Message) -> None:
+    shop_id = await get_active_shop_id(message.from_user.id)
+    if not shop_id:
+        await message.answer("Iltimos, do'konni tanlang.")
+        return
+
+    categories = await get_categories(shop_id)
+    if not categories:
+        await message.answer("Hozircha kategoriyalar yo'q.")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for cat in categories:
+        builder.button(text=cat.name, callback_data=f"cat_{cat.id}")
+    builder.button(text="🔍 Mahsulot qidirish", callback_data="start_search")
+    builder.button(text="💬 Fikr bildirish", callback_data="leave_feedback")
+    builder.adjust(1)
+    
+    await message.answer("Kategoriyalardan birini tanlang:", reply_markup=builder.as_markup())
+
+
+@dp.message(F.text == "🛒 Savatcha")
+async def show_cart_v2(message: Message) -> None:
+    shop_id = await get_active_shop_id(message.from_user.id)
+    if not shop_id:
+        await message.answer("Iltimos, do'konni tanlang.")
+        return
+
+    cart_items = await get_user_cart(message.from_user.id, shop_id)
+    if not cart_items:
+        await message.answer("Savatchangiz bo'sh. 📭")
+        return
+
+    total_sum = 0
+    keyboard_rows = []
+    for cart, product in cart_items:
+        sum_price = product.price * cart.quantity
+        total_sum += sum_price
+        keyboard_rows.append([
+            InlineKeyboardButton(text=f"➖", callback_data=f"cartminus_{cart.id}"),
+            InlineKeyboardButton(text=f"{product.name} x{cart.quantity}", callback_data="noop"),
+            InlineKeyboardButton(text=f"➕", callback_data=f"cartplus_{cart.id}"),
+        ])
+
+    keyboard_rows.append([InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="start_order")])
+    keyboard_rows.append([InlineKeyboardButton(text="🗑️ Savatchani tozalash", callback_data="clear_cart")])
+
+    text = f"<b>Sizning savatchangiz:</b>\n\n💰 Umumiy summa: {total_sum} so'm"
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows), parse_mode="HTML")
+
+
+@dp.message(F.text == "🛍️ Mijoz sifatida ko'rish")
+async def switch_to_customer_view(message: Message) -> None:
+    await message.answer(
+        "🛍️ Mijoz rejimi yoqildi.",
+        reply_markup=get_main_menu()
+    )
+
+
+async def handle_ping(request):
+    return web.Response(text="Bot is alive")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+async def main():
+    await init_db()
+    print("Bot muvaffaqiyatli ishga tushdi!")
+    await start_web_server()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    asyncio.run(main())
 
 # ================= BOSH ADMIN PANELI =================
 
@@ -230,6 +427,7 @@ def shop_admin_menu():
         keyboard=[
             [KeyboardButton(text="➕ Mahsulot qo'shish"), KeyboardButton(text="📋 Mahsulotlar")],
             [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="📦 Buyurtmalar")],
+            [KeyboardButton(text="🎟 Promokod qo'shish"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="🛍️ Mijoz sifatida ko'rish")]
         ],
         resize_keyboard=True
@@ -492,7 +690,7 @@ async def clear_cart_handler(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-# ================= BUYURTMA VA MANZIL (FSM + ADDRESS REUSE) =================
+# ================= BUYURTMA VA MANZIL =================
 
 @router.callback_query(F.data == "start_order")
 async def checkout_start(callback: CallbackQuery, state: FSMContext):
@@ -500,7 +698,6 @@ async def checkout_start(callback: CallbackQuery, state: FSMContext):
     shop_id = data.get("current_shop_id") or await get_active_shop_id(callback.from_user.id)
     user_id = callback.from_user.id
     
-    # Savat bo'sh emasligini tekshiramiz
     cart_items = await get_user_cart(user_id, shop_id)
     if not cart_items:
         await callback.answer("Savatchangiz bo'sh!", show_alert=True)
@@ -542,7 +739,6 @@ async def use_saved_address(callback: CallbackQuery, state: FSMContext):
     shop_id = data.get("current_shop_id") or await get_active_shop_id(callback.from_user.id)
     telegram_id = callback.from_user.id
 
-    # Buyurtmani yaratish
     order_id, total_price, items_summary = await create_order_from_cart_detailed(telegram_id, shop_id, phone, address)
     await state.clear()
 
@@ -550,7 +746,6 @@ async def use_saved_address(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("❌ Xatolik yuz berdi. Buyurtma yaratilmadi.", reply_markup=get_main_menu())
         return
 
-    # Do'kon egasiga xabar yuborish
     await notify_shop_owner(bot, shop_id, order_id, telegram_id, phone, address, total_price, items_summary)
 
     await callback.message.answer(
@@ -603,7 +798,6 @@ async def process_address(message: Message, state: FSMContext) -> None:
         await message.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
         return
 
-    # Do'kon egasiga xabar berish
     await notify_shop_owner(bot, shop_id, order_id, telegram_id, phone, address, total_price, items_summary)
 
     await message.answer(
@@ -613,10 +807,7 @@ async def process_address(message: Message, state: FSMContext) -> None:
     )
 
 
-# ================= DO'KON EGASIGA NOTIFIKATSIYA YORDAMCHISI =================
-
 async def create_order_from_cart_detailed(user_id: int, shop_id: int, phone: str, address: str):
-    """Savatdagi mahsulotlardan buyurtma yasaydi va egasiga yuborish uchun ma'lumotlarni qaytaradi"""
     cart_items = await get_user_cart(user_id, shop_id)
     if not cart_items:
         return None, 0, ""
@@ -629,8 +820,6 @@ async def create_order_from_cart_detailed(user_id: int, shop_id: int, phone: str
         items_lines.append(f"• {product.name} x{cart.quantity} — {sum_price:,} so'm")
 
     items_text = "\n".join(items_lines)
-
-    # Asl bazadagi create_order_from_cart funksiyasini chaqiramiz
     order_id = await create_order_from_cart(user_id=user_id, shop_id=shop_id, phone=phone, address=address)
     return order_id, total_price, items_text
 
@@ -792,7 +981,7 @@ async def show_my_orders(message: Message) -> None:
 async def switch_to_customer_view(message: Message) -> None:
     await message.answer(
         "🛍️ Endi mijoz rejimidasiz. Katalogni ko'rishingiz mumkin.\n\n"
-        "Admin panelga qaytish uchun do'kon havolangizni qayta bosing.",
+        "Admin panelga qaytish uchun /start buyrug'ini bosing.",
         reply_markup=get_main_menu()
     )
 
@@ -825,5 +1014,3 @@ async def main():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     asyncio.run(main())
-
-
