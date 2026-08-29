@@ -1,17 +1,19 @@
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from config import settings
+from app.models import Base
 
+# DATABASE_URL o'rniga settings.DB_URL ishlatamiz
+engine = create_async_engine(
+    settings.DB_URL, 
+    echo=True, 
+    connect_args={"ssl": "require"} 
+)
 
-class Settings(BaseSettings):
-    BOT_TOKEN: str
-    DB_URL: str = "postgresql+asyncpg://online_shop_db_m4w3_user:PAROL@dpg-da8hladg1s2s739eqbj0-a.ohio-postgres.render.com/online_shop_db_m4w3"
-    ADMIN_IDS: list[int] = Field(default_factory=list)
+async_session = async_sessionmaker(
+    engine,
+    expire_on_commit=False,
+)
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
-
-
-settings = Settings()
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
