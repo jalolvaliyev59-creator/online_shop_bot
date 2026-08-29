@@ -16,7 +16,12 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton
 )
-
+from app.database.requests import (
+    search_products,
+    get_user_orders,
+    update_cart_quantity,
+    get_cart_item_by_id
+)
 
 from aiogram.types import ErrorEvent
 from config import settings
@@ -66,11 +71,11 @@ def get_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🛍️ Katalog"), KeyboardButton(text="🛒 Savatcha")],
+            [KeyboardButton(text="🔍 Qidiruv"), KeyboardButton(text="📦 Buyurtmalarim")],
             [KeyboardButton(text="📞 Biz bilan bog'lanish")]
         ],
         resize_keyboard=True
     )
-
 
 def is_super_admin(telegram_id: int) -> bool:
     return telegram_id in settings.ADMIN_IDS
@@ -246,6 +251,33 @@ async def show_categories(message: Message) -> None:
     await message.answer("Kategoriyalardan birini tanlang:", reply_markup=keyboard)
 
 
+PRODUCTS_PER_PAGE = 5
+
+
+def build_products_keyboard(products, category_id, page):
+    total_pages = (len(products) - 1) // PRODUCTS_PER_PAGE + 1
+    start = page * PRODUCTS_PER_PAGE
+    end = start + PRODUCTS_PER_PAGE
+    page_products = products[start:end]
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"{prod.name} - {prod.price} so'm", callback_data=f"prod_{prod.id}")]
+        for prod in page_products
+    ]
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"catpage_{category_id}_{page - 1}"))
+    if end < len(products):
+        nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"catpage_{category_id}_{page + 1}"))
+    if nav_row:
+        keyboard.append(nav_row)
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Kategoriyalarga qaytish", callback_data="back_to_categories")])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard), total_pages
+
+
 @dp.callback_query(F.data.startswith("cat_"))
 async def show_products(callback: CallbackQuery) -> None:
     shop_id = await get_active_shop_id(callback.from_user.id)
@@ -256,13 +288,41 @@ async def show_products(callback: CallbackQuery) -> None:
         await callback.answer("Bu kategoriyada hozircha mahsulot yo'q.", show_alert=True)
         return
 
+    keyboard, total_pages = build_products_keyboard(products, category_id, page=0)
+    text = f"Mahsulotlardan birini tanlang: (1/{total_pages}-sahifa)"
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("catpage_"))
+async def show_products_page(callback: CallbackQuery) -> None:
+    shop_id = await get_active_shop_id(callback.from_user.id)
+    parts = callback.data.split("_")
+    category_id = int(parts[1])
+    page = int(parts[2])
+    products = await get_products_by_category(category_id, shop_id)
+
+    if not products:
+        await callback.answer("Mahsulot topilmadi.", show_alert=True)
+        return
+
+    keyboard, total_pages = build_products_keyboard(products, category_id, page=page)
+    text = f"Mahsulotlardan birini tanlang: ({page + 1}/{total_pages}-sahifa)"
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_to_categories")
+async def back_to_categories_handler(callback: CallbackQuery) -> None:
+    shop_id = await get_active_shop_id(callback.from_user.id)
+    categories = await get_categories(shop_id)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{prod.name} - {prod.price} so'm", callback_data=f"prod_{prod.id}")]
-            for prod in products
+            [InlineKeyboardButton(text=cat.name, callback_data=f"cat_{cat.id}")]
+            for cat in categories
         ]
     )
-    await callback.message.edit_text("Mahsulotlardan birini tanlang:", reply_markup=keyboard)
+    await callback.message.edit_text("Kategoriyalardan birini tanlang:", reply_markup=keyboard)
     await callback.answer()
 
 
@@ -392,6 +452,153 @@ async def process_address(message: Message, state: FSMContext) -> None:
 @dp.message(F.text == "📞 Biz bilan bog'lanish")
 async def contact_handler(message: Message) -> None:
     await message.answer("📞 Biz bilan bog'lanish uchun admin bilan bog'laning.")
+
+
+# ================= QIDIRUV =================
+
+class SearchState:
+    from aiogram.fsm.state import State, StatesGroup
+
+    class Search(StatesGroup):
+        query = State()
+
+
+@dp.message(F.text == "🔍 Qidiruv")
+async def start_search(message: Message, state: FSMContext) -> None:
+    shop_id = await get_active_shop_id(message.from_user.id)
+    if not shop_id:
+        await message.answer("Iltimos, avval do'kon havolasi orqali kiring.")
+        return
+    await state.set_state(SearchState.Search.query)
+    await message.answer("Qidirilayotgan mahsulot nomini yozing:")
+
+
+@dp.message(SearchState.Search.query)
+async def process_search(message: Message, state: FSMContext) -> None:
+    shop_id = await get_active_shop_id(message.from_user.id)
+    await state.clear()
+
+    results = await search_products(shop_id, message.text)
+    if not results:
+        await message.answer("Hech narsa topilmadi. 😔", reply_markup=get_main_menu())
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"{p.name} - {p.price} so'm", callback_data=f"prod_{p.id}")]
+            for p in results[:15]
+        ]
+    )
+    await message.answer(f"🔍 Topildi ({len(results)} ta):", reply_markup=keyboard)
+
+
+# ================= BUYURTMALARIM =================
+
+@dp.message(F.text == "📦 Buyurtmalarim")
+async def show_my_orders(message: Message) -> None:
+    shop_id = await get_active_shop_id(message.from_user.id)
+    if not shop_id:
+        await message.answer("Iltimos, avval do'kon havolasi orqali kiring.")
+        return
+
+    orders = await get_user_orders(message.from_user.id, shop_id)
+    if not orders:
+        await message.answer("Sizda hali buyurtmalar yo'q.")
+        return
+
+    text = "📦 <b>Sizning buyurtmalaringiz:</b>\n\n"
+    for order in orders[:10]:
+        text += f"🆔 #{order.id} — {order.total_price} so'm — {order.status}\n"
+    await message.answer(text, parse_mode="HTML")
+
+
+# ================= SAVATNI +/- BILAN TAHRIRLASH =================
+
+@dp.message(F.text == "🛒 Savatcha")
+async def show_cart_v2(message: Message) -> None:
+    shop_id = await get_active_shop_id(message.from_user.id)
+    if not shop_id:
+        await message.answer("Iltimos, avval do'kon havolasi orqali kiring.")
+        return
+
+    cart_items = await get_user_cart(message.from_user.id, shop_id)
+    if not cart_items:
+        await message.answer("Savatchangiz bo'sh. 📭")
+        return
+
+    total_sum = 0
+    keyboard_rows = []
+    for cart, product in cart_items:
+        sum_price = product.price * cart.quantity
+        total_sum += sum_price
+        keyboard_rows.append([
+            InlineKeyboardButton(text=f"➖", callback_data=f"cartminus_{cart.id}"),
+            InlineKeyboardButton(text=f"{product.name} x{cart.quantity}", callback_data="noop"),
+            InlineKeyboardButton(text=f"➕", callback_data=f"cartplus_{cart.id}"),
+        ])
+
+    keyboard_rows.append([InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="create_order")])
+    keyboard_rows.append([InlineKeyboardButton(text="🗑️ Savatchani tozalash", callback_data="clear_cart")])
+
+    text = f"<b>Sizning savatchangiz:</b>\n\n💰 Umumiy summa: {total_sum} so'm"
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "noop")
+async def noop_handler(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("cartplus_"))
+async def cart_plus(callback: CallbackQuery) -> None:
+    cart_id = int(callback.data.split("_")[1])
+    item = await get_cart_item_by_id(cart_id)
+    if not item:
+        await callback.answer("Topilmadi.", show_alert=True)
+        return
+    cart, product = item
+    await update_cart_quantity(cart_id, cart.quantity + 1)
+    await refresh_cart_message(callback)
+
+
+@dp.callback_query(F.data.startswith("cartminus_"))
+async def cart_minus(callback: CallbackQuery) -> None:
+    cart_id = int(callback.data.split("_")[1])
+    item = await get_cart_item_by_id(cart_id)
+    if not item:
+        await callback.answer("Topilmadi.", show_alert=True)
+        return
+    cart, product = item
+    await update_cart_quantity(cart_id, cart.quantity - 1)
+    await refresh_cart_message(callback)
+
+
+async def refresh_cart_message(callback: CallbackQuery):
+    shop_id = await get_active_shop_id(callback.from_user.id)
+    cart_items = await get_user_cart(callback.from_user.id, shop_id)
+
+    if not cart_items:
+        await callback.message.edit_text("Savatchangiz bo'sh. 📭")
+        await callback.answer()
+        return
+
+    total_sum = 0
+    keyboard_rows = []
+    for cart, product in cart_items:
+        sum_price = product.price * cart.quantity
+        total_sum += sum_price
+        keyboard_rows.append([
+            InlineKeyboardButton(text=f"➖", callback_data=f"cartminus_{cart.id}"),
+            InlineKeyboardButton(text=f"{product.name} x{cart.quantity}", callback_data="noop"),
+            InlineKeyboardButton(text=f"➕", callback_data=f"cartplus_{cart.id}"),
+        ])
+
+    keyboard_rows.append([InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="create_order")])
+    keyboard_rows.append([InlineKeyboardButton(text="🗑️ Savatchani tozalash", callback_data="clear_cart")])
+
+    text = f"<b>Sizning savatchangiz:</b>\n\n💰 Umumiy summa: {total_sum} so'm"
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows), parse_mode="HTML")
+    await callback.answer()
 
 
 # ================= WEB SERVER (Render uchun) =================

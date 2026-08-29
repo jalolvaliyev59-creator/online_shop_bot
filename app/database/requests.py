@@ -243,3 +243,47 @@ async def update_product_quantity(product_id: int, new_quantity: int):
         if product:
             product.quantity = new_quantity
             await session.commit()
+
+from sqlalchemy import or_
+
+
+async def search_products(shop_id: int, query: str):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Product).where(
+                Product.shop_id == shop_id,
+                or_(
+                    Product.name.ilike(f"%{query}%"),
+                    Product.description.ilike(f"%{query}%")
+                )
+            )
+        )
+        return result.scalars().all()
+
+
+async def get_user_orders(user_id: int, shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order).where(Order.user_id == user_id, Order.shop_id == shop_id).order_by(Order.id.desc())
+        )
+        return result.scalars().all()
+
+
+async def update_cart_quantity(cart_id: int, new_quantity: int):
+    async with async_session() as session:
+        result = await session.execute(select(CartItem).where(CartItem.id == cart_id))
+        item = result.scalars().first()
+        if item:
+            if new_quantity <= 0:
+                await session.delete(item)
+            else:
+                item.quantity = new_quantity
+            await session.commit()
+
+
+async def get_cart_item_by_id(cart_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(CartItem, Product).join(Product, CartItem.product_id == Product.id).where(CartItem.id == cart_id)
+        )
+        return result.first()
