@@ -1014,3 +1014,22 @@ async def main():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     asyncio.run(main())
+
+
+
+# Eski qismni o'rniga shuni qo'ying:
+
+async def main():
+    await init_db()
+    print("Bot muvaffaqiyatli ishga tushdi!")
+    await start_web_server()
+    
+    # Event loop xatoligini oldini olish uchun botni shu yerda ishga tushiramiz
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Bot to'xtatildi!")
