@@ -495,17 +495,34 @@ async def create_order_start(callback: CallbackQuery, state: FSMContext) -> None
         await callback.answer("Savatchangiz bo'sh!", show_alert=True)
         return
 
-    await state.set_state(OrderState.phone)
-    phone_keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📞 Telefon raqamni yuborish", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
+    await state.set_state(OrderState.promo)
     await callback.message.answer(
-        "📱 Buyurtmani rasmiylashtirish uchun telefon raqamingizni yuboring:",
-        reply_markup=phone_keyboard
+        "🎟 Agar promokodingiz bo'lsa kiriting, aks holda \"yo'q\" deb yozing:"
     )
     await callback.answer()
+
+
+@dp.message(OrderState.address)
+async def process_address(message: Message, state: FSMContext) -> None:
+    address = message.text
+    data = await state.get_data()
+    phone = data.get("phone")
+    discount = data.get("discount", 0)
+    telegram_id = message.from_user.id
+    shop_id = await get_active_shop_id(telegram_id)
+
+    order_id = await create_order_from_cart(user_id=telegram_id, shop_id=shop_id, phone=phone, address=address, discount=discount)
+    await state.clear()
+
+    if not order_id:
+        await message.answer("Xatolik yuz berdi.", reply_markup=get_main_menu())
+        return
+
+    await message.answer(
+        f"🎉 <b>Buyurtmangiz muvaffaqiyatli qabul qilindi!</b>\n\n🆔 Buyurtma raqami: #{order_id}",
+        reply_markup=get_main_menu(),
+        parse_mode="HTML"
+    )
 
 
 @dp.message(OrderState.phone, F.contact | F.text)

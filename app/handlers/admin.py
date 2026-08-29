@@ -11,12 +11,25 @@ from app.database.requests import (
     get_all_orders, update_order_status,
     update_product_price, update_product_quantity
 )
+
+
+from app.states.admin import AddProduct, AddCategory, EditProduct, AddPromocode
+from app.database.requests import (
+    get_shop_by_owner, get_categories, add_product, add_category,
+    get_all_products, delete_product,
+    get_all_orders, update_order_status,
+    update_product_price, update_product_quantity,
+    add_promocode, get_shop_stats
+)
+
+
 from app.states.admin import AddProduct, AddCategory, EditProduct
 
 admin_router = Router()
 
 MENU_TEXTS = {
-    "➕ Mahsulot qo'shish", "📋 Mahsulotlar", "📁 Kategoriya qo'shish", "📦 Buyurtmalar"
+    "➕ Mahsulot qo'shish", "📋 Mahsulotlar", "📁 Kategoriya qo'shish", "📦 Buyurtmalar",
+    "🎟 Promokod qo'shish", "📊 Statistika"
 }
 
 
@@ -24,7 +37,9 @@ def admin_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Mahsulot qo'shish"), KeyboardButton(text="📋 Mahsulotlar")],
-            [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="📦 Buyurtmalar")]
+            [KeyboardButton(text="📁 Kategoriya qo'shish"), KeyboardButton(text="📦 Buyurtmalar")],
+            [KeyboardButton(text="🎟 Promokod qo'shish"), KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="🛍️ Mijoz sifatida ko'rish")]
         ],
         resize_keyboard=True
     )
@@ -68,7 +83,10 @@ async def route_menu_text(message: Message, state: FSMContext):
         await start_add_category(message, state)
     elif message.text == "📦 Buyurtmalar":
         await list_orders(message, shop)
-
+    elif message.text == "🎟 Promokod qo'shish":
+        await start_add_promocode(message, state)
+    elif message.text == "📊 Statistika":
+        await show_shop_stats(message, shop)
 
 # ================= MAHSULOT QO'SHISH =================
 
@@ -257,3 +275,54 @@ async def change_order_status(callback: CallbackQuery):
     new_status = parts[2]
     await update_order_status(order_id, new_status)
     await callback.answer(f"Holat yangilandi: {new_status}", show_alert=True)
+
+
+
+
+
+
+
+
+
+# ================= PROMOKOD =================
+
+async def start_add_promocode(message: Message, state: FSMContext):
+    await state.set_state(AddPromocode.code)
+    await message.answer("Promokod nomini kiriting (masalan: WELCOME10):", reply_markup=cancel_keyboard())
+
+
+@admin_router.message(AddPromocode.code)
+async def process_promocode_code(message: Message, state: FSMContext):
+    await state.update_data(code=message.text)
+    await state.set_state(AddPromocode.discount)
+    await message.answer("Chegirma foizini kiriting (masalan: 10):")
+
+
+@admin_router.message(AddPromocode.discount)
+async def process_promocode_discount(message: Message, state: FSMContext):
+    if not message.text.isdigit() or not (1 <= int(message.text) <= 100):
+        await message.answer("Iltimos, 1 dan 100 gacha bo'lgan raqam kiriting!")
+        return
+
+    shop = await get_owner_shop(message.from_user.id)
+    if not shop:
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    await add_promocode(shop.id, data["code"], int(message.text))
+    await state.clear()
+    await message.answer(f"✅ Promokod qo'shildi: {data['code'].upper()} — {message.text}% chegirma", reply_markup=admin_menu_keyboard())
+
+
+# ================= STATISTIKA =================
+
+async def show_shop_stats(message: Message, shop):
+    stats = await get_shop_stats(shop.id)
+    text = (
+        f"📊 <b>«{shop.name}» statistikasi</b>\n\n"
+        f"📦 Jami mahsulotlar: {stats['total_products']}\n"
+        f"🛒 Jami buyurtmalar: {stats['total_orders']}\n"
+        f"💰 Jami tushum: {stats['total_revenue']} so'm"
+    )
+    await message.answer(text, parse_mode="HTML")

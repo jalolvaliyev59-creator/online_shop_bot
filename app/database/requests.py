@@ -171,7 +171,7 @@ async def clear_cart(user_id: int, shop_id: int):
 
 # ================= BUYURTMALAR =================
 
-async def create_order_from_cart(user_id: int, shop_id: int, phone: str, address: str):
+async def create_order_from_cart(user_id: int, shop_id: int, phone: str, address: str, discount: int = 0):
     async with async_session() as session:
         result = await session.execute(
             select(CartItem, Product)
@@ -184,6 +184,8 @@ async def create_order_from_cart(user_id: int, shop_id: int, phone: str, address
             return None
 
         total_sum = sum(product.price * cart.quantity for cart, product in cart_items)
+        if discount:
+            total_sum = int(total_sum * (100 - discount) / 100)
 
         new_order = Order(
             user_id=user_id,
@@ -209,7 +211,6 @@ async def create_order_from_cart(user_id: int, shop_id: int, phone: str, address
 
         await session.commit()
         return new_order.id
-
 
 async def get_all_orders(shop_id: int):
     async with async_session() as session:
@@ -336,3 +337,46 @@ async def get_order_owner_and_shop(order_id: int):
         if order:
             return order.user_id, order.shop_id
         return None, None
+
+
+from app.models.promocode import Promocode
+
+
+async def add_promocode(shop_id: int, code: str, discount_percent: int):
+    async with async_session() as session:
+        session.add(Promocode(shop_id=shop_id, code=code.upper(), discount_percent=discount_percent))
+        await session.commit()
+
+
+async def get_promocode(shop_id: int, code: str):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Promocode).where(
+                Promocode.shop_id == shop_id,
+                Promocode.code == code.upper(),
+                Promocode.is_active == True
+            )
+        )
+        return result.scalars().first()
+
+
+async def get_shop_stats(shop_id: int):
+    async with async_session() as session:
+        from sqlalchemy import func
+
+        orders_result = await session.execute(
+            select(func.count(Order.id), func.coalesce(func.sum(Order.total_price), 0))
+            .where(Order.shop_id == shop_id)
+        )
+        total_orders, total_revenue = orders_result.one()
+
+        products_result = await session.execute(
+            select(func.count(Product.id)).where(Product.shop_id == shop_id)
+        )
+        total_products = products_result.scalar() or 0
+
+        return {
+            "total_orders": total_orders or 0,
+            "total_revenue": total_revenue or 0,
+            "total_products": total_products
+        }

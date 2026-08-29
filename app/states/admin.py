@@ -17,3 +17,7 @@ class AddShop(StatesGroup):
 class EditProduct(StatesGroup):
     price = State()
     quantity = State()
+
+class AddPromocode(StatesGroup):
+    code = State()
+    discount = State()

@@ -7,3 +7,4 @@ from app.models.order_item import OrderItem
 from app.models.shop import Shop
 from app.models.session import UserSession
 from app.models.wishlist import Wishlist
+from app.models.promocode import Promocode
