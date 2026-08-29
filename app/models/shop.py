@@ -2,7 +2,8 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base import Base
-
+from sqlalchemy import Column, Integer, String, Boolean 
+from sqlalchemy import Boolean, Integer, String
 
 class Shop(Base):
     __tablename__ = "shops"
