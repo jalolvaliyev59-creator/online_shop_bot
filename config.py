@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from config import settings
+
 from app.models import Base
 
 # DATABASE_URL o'rniga settings.DB_URL ishlatamiz
