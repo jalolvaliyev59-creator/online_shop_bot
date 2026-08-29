@@ -2,9 +2,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from config import settings
 from app.models import Base
 
-# settings ichidan DATABASE_URL ni olib ishlatamiz
 engine = create_async_engine(
-    settings.DATABASE_URL, 
+    settings.DB_URL,  # <-- DATABASE_URL emas, aynan DB_URL bo'lishi kerak
     echo=True, 
     connect_args={"ssl": "require"} 
 )
