@@ -383,8 +383,8 @@ async def get_shop_stats(shop_id: int):
 
 
 
-from sqlalchemy import select
-from models import Order, async_session  # o'zingizning importlaringizga moslang
+from app.models import Order
+from app.database.connection import async_session
 
 async def get_last_address(user_id: int, shop_id: int):
     async with async_session() as session:
