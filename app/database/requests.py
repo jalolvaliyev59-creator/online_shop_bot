@@ -380,3 +380,19 @@ async def get_shop_stats(shop_id: int):
             "total_revenue": total_revenue or 0,
             "total_products": total_products
         }
+
+
+
+from sqlalchemy import select
+from models import Order, async_session  # o'zingizning importlaringizga moslang
+
+async def get_last_address(user_id: int, shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order)
+            .where(Order.user_id == user_id, Order.shop_id == shop_id)
+            .order_by(Order.id.desc())
+        )
+        order = result.scalars().first()
+        # Agar oldingi buyurtma topilsa, uning phone va delivery_address qiymatini qaytaramiz
+        return (order.phone, order.delivery_address) if order else (None, None)

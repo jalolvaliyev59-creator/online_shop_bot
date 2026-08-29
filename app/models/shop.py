@@ -15,3 +15,4 @@ class Shop(Base):
 
     categories: Mapped[list["Category"]] = relationship(cascade="all, delete-orphan")
     products: Mapped[list["Product"]] = relationship(cascade="all, delete-orphan")
+    has_delivery: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

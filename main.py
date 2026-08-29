@@ -3,7 +3,7 @@ import logging
 import sys
 import os
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -17,14 +17,19 @@ from aiogram.types import (
     InlineKeyboardButton,
     ErrorEvent
 )
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
+from sqlalchemy import select
 
 from config import settings
-from app.database.connection import init_db
+from app.database.connection import init_db, async_session
 from app.middlewares.throttling import ThrottlingMiddleware
 from app.handlers.admin import admin_router
 from app.states.order import OrderState
 from app.states.admin import AddShop
+
+from app.models.shop import Shop
+from app.models.feedback import Feedback
 
 from app.database.requests import (
     search_products,
@@ -33,9 +38,7 @@ from app.database.requests import (
     get_cart_item_by_id,
     toggle_wishlist,
     get_wishlist,
-    get_order_owner_and_shop,
     get_shop_by_code,
-    get_shop_by_owner,
     get_shop_by_id,
     get_all_shops,
     create_shop,
@@ -48,15 +51,17 @@ from app.database.requests import (
     get_user_cart,
     clear_cart,
     create_order_from_cart,
-    delete_shop as db_delete_shop
+    get_last_address
 )
 
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher()
+router = Router()
 
 dp.message.middleware(ThrottlingMiddleware())
 dp.callback_query.middleware(ThrottlingMiddleware())
 dp.include_router(admin_router)
+dp.include_router(router)
 
 @dp.errors()
 async def global_error_handler(event: ErrorEvent):
@@ -231,7 +236,7 @@ def shop_admin_menu():
     )
 
 
-# ================= MIJOZ: KATALOG =================
+# ================= MIJOZ: KATALOG VA KATEGORIYALAR =================
 
 @dp.message(F.text == "🛍️ Katalog")
 async def show_categories(message: Message) -> None:
@@ -245,17 +250,17 @@ async def show_categories(message: Message) -> None:
         await message.answer("Hozircha kategoriyalar yo'q.")
         return
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=cat.name, callback_data=f"cat_{cat.id}")]
-            for cat in categories
-        ]
-    )
-    await message.answer("Kategoriyalardan birini tanlang:", reply_markup=keyboard)
+    builder = InlineKeyboardBuilder()
+    for cat in categories:
+        builder.button(text=cat.name, callback_data=f"cat_{cat.id}")
+    builder.button(text="🔍 Mahsulot qidirish", callback_data="start_search")
+    builder.button(text="💬 Fikr bildirish", callback_data="leave_feedback")
+    builder.adjust(1)
+    
+    await message.answer("Kategoriyalardan birini tanlang:", reply_markup=builder.as_markup())
 
 
 PRODUCTS_PER_PAGE = 5
-
 
 def build_products_keyboard(products, category_id, page):
     total_pages = (len(products) - 1) // PRODUCTS_PER_PAGE + 1
@@ -281,7 +286,7 @@ def build_products_keyboard(products, category_id, page):
     return InlineKeyboardMarkup(inline_keyboard=keyboard), total_pages
 
 
-@dp.callback_query(F.data.startswith("cat_"))
+@router.callback_query(F.data.startswith("cat_"))
 async def show_products(callback: CallbackQuery) -> None:
     shop_id = await get_active_shop_id(callback.from_user.id)
     category_id = int(callback.data.split("_")[1])
@@ -297,7 +302,7 @@ async def show_products(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("catpage_"))
+@router.callback_query(F.data.startswith("catpage_"))
 async def show_products_page(callback: CallbackQuery) -> None:
     shop_id = await get_active_shop_id(callback.from_user.id)
     parts = callback.data.split("_")
@@ -315,21 +320,23 @@ async def show_products_page(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@dp.callback_query(F.data == "back_to_categories")
+@router.callback_query(F.data == "back_to_categories")
 async def back_to_categories_handler(callback: CallbackQuery) -> None:
     shop_id = await get_active_shop_id(callback.from_user.id)
     categories = await get_categories(shop_id)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=cat.name, callback_data=f"cat_{cat.id}")]
-            for cat in categories
-        ]
-    )
-    await callback.message.edit_text("Kategoriyalardan birini tanlang:", reply_markup=keyboard)
+    
+    builder = InlineKeyboardBuilder()
+    for cat in categories:
+        builder.button(text=cat.name, callback_data=f"cat_{cat.id}")
+    builder.button(text="🔍 Mahsulot qidirish", callback_data="start_search")
+    builder.button(text="💬 Fikr bildirish", callback_data="leave_feedback")
+    builder.adjust(1)
+    
+    await callback.message.edit_text("Kategoriyalardan birini tanlang:", reply_markup=builder.as_markup())
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("prod_"))
+@router.callback_query(F.data.startswith("prod_"))
 async def show_product_detail(callback: CallbackQuery) -> None:
     product_id = int(callback.data.split("_")[1])
     product = await get_product_by_id(product_id)
@@ -350,7 +357,7 @@ async def show_product_detail(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("wish_"))
+@router.callback_query(F.data.startswith("wish_"))
 async def wishlist_toggle_handler(callback: CallbackQuery) -> None:
     shop_id = await get_active_shop_id(callback.from_user.id)
     product_id = int(callback.data.split("_")[1])
@@ -380,7 +387,7 @@ async def show_wishlist(message: Message) -> None:
     await message.answer("❤️ Sizning sevimlilaringiz:", reply_markup=keyboard)
 
 
-@dp.callback_query(F.data.startswith("add_cart_"))
+@router.callback_query(F.data.startswith("add_cart_"))
 async def add_to_cart_handler(callback: CallbackQuery) -> None:
     shop_id = await get_active_shop_id(callback.from_user.id)
     product_id = int(callback.data.split("_")[2])
@@ -413,19 +420,19 @@ async def show_cart_v2(message: Message) -> None:
             InlineKeyboardButton(text=f"➕", callback_data=f"cartplus_{cart.id}"),
         ])
 
-    keyboard_rows.append([InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="create_order")])
+    keyboard_rows.append([InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="start_order")])
     keyboard_rows.append([InlineKeyboardButton(text="🗑️ Savatchani tozalash", callback_data="clear_cart")])
 
     text = f"<b>Sizning savatchangiz:</b>\n\n💰 Umumiy summa: {total_sum} so'm"
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows), parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "noop")
+@router.callback_query(F.data == "noop")
 async def noop_handler(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("cartplus_"))
+@router.callback_query(F.data.startswith("cartplus_"))
 async def cart_plus(callback: CallbackQuery) -> None:
     cart_id = int(callback.data.split("_")[1])
     item = await get_cart_item_by_id(cart_id)
@@ -437,7 +444,7 @@ async def cart_plus(callback: CallbackQuery) -> None:
     await refresh_cart_message(callback)
 
 
-@dp.callback_query(F.data.startswith("cartminus_"))
+@router.callback_query(F.data.startswith("cartminus_"))
 async def cart_minus(callback: CallbackQuery) -> None:
     cart_id = int(callback.data.split("_")[1])
     item = await get_cart_item_by_id(cart_id)
@@ -469,7 +476,7 @@ async def refresh_cart_message(callback: CallbackQuery):
             InlineKeyboardButton(text=f"➕", callback_data=f"cartplus_{cart.id}"),
         ])
 
-    keyboard_rows.append([InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="create_order")])
+    keyboard_rows.append([InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="start_order")])
     keyboard_rows.append([InlineKeyboardButton(text="🗑️ Savatchani tozalash", callback_data="clear_cart")])
 
     text = f"<b>Sizning savatchangiz:</b>\n\n💰 Umumiy summa: {total_sum} so'm"
@@ -477,7 +484,7 @@ async def refresh_cart_message(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data == "clear_cart")
+@router.callback_query(F.data == "clear_cart")
 async def clear_cart_handler(callback: CallbackQuery) -> None:
     shop_id = await get_active_shop_id(callback.from_user.id)
     await clear_cart(callback.from_user.id, shop_id)
@@ -485,71 +492,119 @@ async def clear_cart_handler(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-# ================= BUYURTMA (FSM) =================
+# ================= BUYURTMA VA MANZIL (FSM + ADDRESS REUSE) =================
 
-@dp.callback_query(F.data == "create_order")
-async def create_order_start(callback: CallbackQuery, state: FSMContext) -> None:
-    shop_id = await get_active_shop_id(callback.from_user.id)
-    cart_items = await get_user_cart(callback.from_user.id, shop_id)
+@router.callback_query(F.data == "start_order")
+async def checkout_start(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    shop_id = data.get("current_shop_id") or await get_active_shop_id(callback.from_user.id)
+    user_id = callback.from_user.id
+    
+    # Savat bo'sh emasligini tekshiramiz
+    cart_items = await get_user_cart(user_id, shop_id)
     if not cart_items:
         await callback.answer("Savatchangiz bo'sh!", show_alert=True)
         return
 
-    await state.set_state(OrderState.promo)
+    phone, last_address = await get_last_address(user_id, shop_id)
+    
+    if last_address and phone:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Ha, shu manzildan foydalanish", callback_data="use_last_address")
+        builder.button(text="✍️ Yangi manzil kiritish", callback_data="enter_new_address")
+        builder.adjust(1)
+        
+        await state.update_data(saved_phone=phone, saved_address=last_address, current_shop_id=shop_id)
+        
+        await callback.message.answer(
+            f"📍 Sizning oxirgi manzilingiz topildi:\n\n"
+            f"📞 Tel: <b>{phone}</b>\n"
+            f"🏠 Manzil: <b>{last_address}</b>\n\n"
+            f"Shu manzilga yetkazib beraylikmi?",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    else:
+        await state.update_data(current_shop_id=shop_id)
+        await state.set_state(OrderState.phone)
+        await callback.message.answer(
+            "📞 Iltimos, aloqa uchun telefon raqamingizni yuboring (masalan: +998901234567):",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "use_last_address")
+async def use_saved_address(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    phone = data.get("saved_phone")
+    address = data.get("saved_address")
+    shop_id = data.get("current_shop_id") or await get_active_shop_id(callback.from_user.id)
+    telegram_id = callback.from_user.id
+
+    # Buyurtmani yaratish
+    order_id, total_price, items_summary = await create_order_from_cart_detailed(telegram_id, shop_id, phone, address)
+    await state.clear()
+
+    if not order_id:
+        await callback.message.answer("❌ Xatolik yuz berdi. Buyurtma yaratilmadi.", reply_markup=get_main_menu())
+        return
+
+    # Do'kon egasiga xabar yuborish
+    await notify_shop_owner(bot, shop_id, order_id, telegram_id, phone, address, total_price, items_summary)
+
     await callback.message.answer(
-        "🎟 Agar promokodingiz bo'lsa kiriting, aks holda \"yo'q\" deb yozing:"
+        f"🎉 <b>Buyurtmangiz muvaffaqiyatli qabul qilindi!</b>\n\n"
+        f"🆔 Buyurtma raqami: #{order_id}\n"
+        f"📞 Tel: {phone}\n"
+        f"🏠 Manzil: {address}",
+        reply_markup=get_main_menu(),
+        parse_mode="HTML"
     )
     await callback.answer()
 
 
-@dp.message(OrderState.address)
-async def process_address(message: Message, state: FSMContext) -> None:
-    address = message.text
-    data = await state.get_data()
-    phone = data.get("phone")
-    discount = data.get("discount", 0)
-    telegram_id = message.from_user.id
-    shop_id = await get_active_shop_id(telegram_id)
-
-    order_id = await create_order_from_cart(user_id=telegram_id, shop_id=shop_id, phone=phone, address=address, discount=discount)
-    await state.clear()
-
-    if not order_id:
-        await message.answer("Xatolik yuz berdi.", reply_markup=get_main_menu())
-        return
-
-    await message.answer(
-        f"🎉 <b>Buyurtmangiz muvaffaqiyatli qabul qilindi!</b>\n\n🆔 Buyurtma raqami: #{order_id}",
-        reply_markup=get_main_menu(),
-        parse_mode="HTML"
-    )
-
-
-@dp.message(OrderState.phone, F.contact | F.text)
-async def process_phone(message: Message, state: FSMContext) -> None:
-    phone = message.contact.phone_number if message.contact else message.text
-    await state.update_data(phone=phone)
-    await state.set_state(OrderState.address)
-    await message.answer(
-        "📍 Endi yetkazib berish manzilini yuboring:",
+@router.callback_query(F.data == "enter_new_address")
+async def enter_new_address(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(OrderState.phone)
+    await callback.message.answer(
+        "📞 Iltimos, telefon raqamingizni yuboring:",
         reply_markup=ReplyKeyboardRemove()
     )
+    await callback.answer()
 
 
-@dp.message(OrderState.address)
+@router.message(OrderState.phone, F.contact | F.text)
+async def process_phone(message: Message, state: FSMContext) -> None:
+    phone = message.contact.phone_number if message.contact else message.text
+    digits = "".join(filter(str.isdigit, phone))
+    
+    if len(digits) < 9:
+        await message.answer("❗️ Telefon raqami noto'g'ri. Iltimos, masalan: +998901234567 ko'rinishida to'g'ri raqam yuboring.")
+        return
+        
+    await state.update_data(phone=phone)
+    await state.set_state(OrderState.address)
+    await message.answer("📍 Endi yetkazib berish manzilini yuboring:", reply_markup=ReplyKeyboardRemove())
+
+
+@router.message(OrderState.address)
 async def process_address(message: Message, state: FSMContext) -> None:
     address = message.text
     data = await state.get_data()
     phone = data.get("phone")
     telegram_id = message.from_user.id
-    shop_id = await get_active_shop_id(telegram_id)
+    shop_id = data.get("current_shop_id") or await get_active_shop_id(telegram_id)
 
-    order_id = await create_order_from_cart(user_id=telegram_id, shop_id=shop_id, phone=phone, address=address)
+    order_id, total_price, items_summary = await create_order_from_cart_detailed(telegram_id, shop_id, phone, address)
     await state.clear()
 
     if not order_id:
-        await message.answer("Xatolik yuz berdi.", reply_markup=get_main_menu())
+        await message.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
         return
+
+    # Do'kon egasiga xabar berish
+    await notify_shop_owner(bot, shop_id, order_id, telegram_id, phone, address, total_price, items_summary)
 
     await message.answer(
         f"🎉 <b>Buyurtmangiz muvaffaqiyatli qabul qilindi!</b>\n\n🆔 Buyurtma raqami: #{order_id}",
@@ -558,30 +613,140 @@ async def process_address(message: Message, state: FSMContext) -> None:
     )
 
 
-@dp.message(F.text == "📞 Biz bilan bog'lanish")
-async def contact_handler(message: Message) -> None:
-    await message.answer("📞 Biz bilan bog'lanish uchun admin bilan bog'laning.")
+# ================= DO'KON EGASIGA NOTIFIKATSIYA YORDAMCHISI =================
+
+async def create_order_from_cart_detailed(user_id: int, shop_id: int, phone: str, address: str):
+    """Savatdagi mahsulotlardan buyurtma yasaydi va egasiga yuborish uchun ma'lumotlarni qaytaradi"""
+    cart_items = await get_user_cart(user_id, shop_id)
+    if not cart_items:
+        return None, 0, ""
+
+    total_price = 0
+    items_lines = []
+    for cart, product in cart_items:
+        sum_price = product.price * cart.quantity
+        total_price += sum_price
+        items_lines.append(f"• {product.name} x{cart.quantity} — {sum_price:,} so'm")
+
+    items_text = "\n".join(items_lines)
+
+    # Asl bazadagi create_order_from_cart funksiyasini chaqiramiz
+    order_id = await create_order_from_cart(user_id=user_id, shop_id=shop_id, phone=phone, address=address)
+    return order_id, total_price, items_text
 
 
-# ================= QIDIRUV =================
+async def notify_shop_owner(bot: Bot, shop_id: int, order_id: int, user_id: int, phone: str, address: str, total_price: int, items_text: str):
+    async with async_session() as session:
+        result = await session.execute(select(Shop).where(Shop.id == shop_id))
+        shop = result.scalar_one_or_none()
+        
+    if shop and shop.owner_telegram_id:
+        try:
+            text = (
+                f"🚨 <b>Yangi buyurtma! №{order_id}</b>\n\n"
+                f"🛍 Do'kon: <b>{shop.name}</b>\n"
+                f"👤 Xaridor ID: <code>{user_id}</code>\n"
+                f"📞 Telefon: <b>{phone}</b>\n"
+                f"📍 Manzil: <b>{address}</b>\n\n"
+                f"📦 <b>Mahsulotlar:</b>\n{items_text}\n\n"
+                f"💰 <b>Jami summa:</b> {total_price:,} so'm"
+            )
+            
+            builder = InlineKeyboardBuilder()
+            builder.button(text="✅ Qabul qilish", callback_data=f"accept_order_{order_id}")
+            builder.button(text="❌ Bekor qilish", callback_data=f"cancel_order_{order_id}")
+            builder.adjust(2)
+            
+            await bot.send_message(
+                shop.owner_telegram_id, 
+                text, 
+                parse_mode="HTML", 
+                reply_markup=builder.as_markup()
+            )
+        except Exception:
+            pass
+
+
+# ================= FIKR BILDIRISH (FEEDBACK) TIZIMI =================
+
+class FeedbackState(StatesGroup):
+    waiting_text = State()
+
+@router.callback_query(F.data == "leave_feedback")
+async def start_feedback(callback: CallbackQuery, state: FSMContext):
+    shop_id = await get_active_shop_id(callback.from_user.id)
+    await state.update_data(current_shop_id=shop_id)
+    await state.set_state(FeedbackState.waiting_text)
+    await callback.message.answer("✍️ Do'kon haqida o'z fikringiz, shikoyat yoki taklifingizni shu yerga yozib qoldiring:")
+    await callback.answer()
+
+@router.message(FeedbackState.waiting_text)
+async def save_feedback(message: Message, state: FSMContext):
+    data = await state.get_data()
+    shop_id = data.get("current_shop_id") or await get_active_shop_id(message.from_user.id)
+    
+    if not shop_id:
+        await message.answer("❌ Xatolik yuz berdi. Iltimos, do'konga qaytadan kiring.")
+        await state.clear()
+        return
+
+    async with async_session() as session:
+        fb = Feedback(
+            shop_id=shop_id, 
+            user_id=message.from_user.id, 
+            text=message.text.strip()
+        )
+        session.add(fb)
+        await session.commit()
+        
+        result = await session.execute(select(Shop).where(Shop.id == shop_id))
+        shop = result.scalar_one_or_none()
+
+    if shop and shop.owner_telegram_id:
+        try:
+            user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
+            await message.bot.send_message(
+                shop.owner_telegram_id,
+                f"💬 <b>«{shop.name}» do'koningizga yangi fikr keldi!</b>\n\n"
+                f"👤 Xaridor: {user_info}\n"
+                f"📝 Xabar: {message.text.strip()}",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    await message.answer("✅ Fikringiz uchun rahmat! U bevosita do'kon egasiga yetkazildi.")
+    await state.clear()
+
+
+# ================= QIDIRUV (SEARCH) =================
 
 class SearchState(StatesGroup):
     query = State()
 
+@router.callback_query(F.data == "start_search")
+async def start_product_search(callback: CallbackQuery, state: FSMContext):
+    shop_id = await get_active_shop_id(callback.from_user.id)
+    await state.update_data(current_shop_id=shop_id)
+    await state.set_state(SearchState.query)
+    await callback.message.answer("🔍 Qidirilayotgan mahsulot nomini yozing:")
+    await callback.answer()
 
 @dp.message(F.text == "🔍 Qidiruv")
-async def start_search(message: Message, state: FSMContext) -> None:
+async def start_search_menu(message: Message, state: FSMContext) -> None:
     shop_id = await get_active_shop_id(message.from_user.id)
     if not shop_id:
         await message.answer("Iltimos, avval do'kon havolasi orqali kiring.")
         return
+    await state.update_data(current_shop_id=shop_id)
     await state.set_state(SearchState.query)
-    await message.answer("Qidirilayotgan mahsulot nomini yozing:")
+    await message.answer("🔍 Qidirilayotgan mahsulot nomini yozing:")
 
 
-@dp.message(SearchState.query)
+@router.message(SearchState.query)
 async def process_search(message: Message, state: FSMContext) -> None:
-    shop_id = await get_active_shop_id(message.from_user.id)
+    data = await state.get_data()
+    shop_id = data.get("current_shop_id") or await get_active_shop_id(message.from_user.id)
     await state.clear()
 
     results = await search_products(shop_id, message.text)
@@ -598,7 +763,12 @@ async def process_search(message: Message, state: FSMContext) -> None:
     await message.answer(f"🔍 Topildi ({len(results)} ta):", reply_markup=keyboard)
 
 
-# ================= BUYURTMALARIM =================
+# ================= BIZ BILAN BOG'LANISH VA BUYURTMALARIM =================
+
+@dp.message(F.text == "📞 Biz bilan bog'lanish")
+async def contact_handler(message: Message) -> None:
+    await message.answer("📞 Biz bilan bog'lanish uchun do'kon ma'muriyatiga murojaat qiling.")
+
 
 @dp.message(F.text == "📦 Buyurtmalarim")
 async def show_my_orders(message: Message) -> None:
@@ -617,8 +787,6 @@ async def show_my_orders(message: Message) -> None:
         text += f"🆔 #{order.id} — {order.total_price} so'm — {order.status}\n"
     await message.answer(text, parse_mode="HTML")
 
-
-# ================= MIJOZ SIFATIDA KO'RISH =================
 
 @dp.message(F.text == "🛍️ Mijoz sifatida ko'rish")
 async def switch_to_customer_view(message: Message) -> None:
@@ -657,3 +825,5 @@ async def main():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     asyncio.run(main())
+
+

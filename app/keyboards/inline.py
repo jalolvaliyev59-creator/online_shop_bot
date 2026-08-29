@@ -41,3 +41,19 @@ def get_products_keyboard():
     # Orqaga qaytish tugmasini qo'shamiz
     keyboard.add(InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_categories"))
     return keyboard
+
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+def get_shop_menu_keyboard():
+    builder = InlineKeyboardBuilder()
+    
+    # Oldindan bor bo'lgan tugmalaringiz (masalan):
+    builder.button(text="🛍 Katalog", callback_data="catalog")
+    builder.button(text="🛒 Savatcha", callback_data="cart")
+    builder.button(text="📦 Buyurtmalarim", callback_data="my_orders")
+    
+    # ⬇️ Mana shu yerga "Fikr bildirish" tugmasini qo'shasiz:
+    builder.button(text="💬 Fikr bildirish", callback_data="leave_feedback")
+    
+    builder.adjust(2) # Tugmalar qatoriga nechta chiqishini belgilaydi
+    return builder.as_markup()
