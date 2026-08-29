@@ -1,24 +1,17 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from app.database.base import Base
-from config import settings
+import os
+from sqlalchemy.ext.asyncio import create_async_engine
 
-connect_args = {}
-if "postgresql" in settings.DB_URL:
-    connect_args = {"ssl": "require"}
+# Render muhitidan DATABASE_URL ni olish
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
+  DATABASE_URL = DATABASE_URL.replace(
+      "postgresql://", "postgresql+asyncpg://", 1
+  )
+
+# Bulutli bazalar uchun SSL ulanishini majburiy qilish
 engine = create_async_engine(
-    settings.DB_URL,
-    echo=False,
-    pool_pre_ping=True,
-    connect_args=connect_args
+    DATABASE_URL,
+    echo=True,
+    connect_args={"ssl": "require"},
 )
-
-async_session = async_sessionmaker(
-    engine,
-    expire_on_commit=False,
-)
-
-
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
