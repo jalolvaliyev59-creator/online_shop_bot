@@ -6,3 +6,4 @@ from app.models.order import Order
 from app.models.order_item import OrderItem
 from app.models.shop import Shop
 from app.models.session import UserSession
+from app.models.wishlist import Wishlist

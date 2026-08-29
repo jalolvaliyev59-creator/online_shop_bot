@@ -299,3 +299,40 @@ async def delete_shop(shop_id: int):
             await session.commit()
             return True
         return False
+
+from app.models.wishlist import Wishlist
+
+
+async def toggle_wishlist(user_id: int, product_id: int, shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Wishlist).where(Wishlist.user_id == user_id, Wishlist.product_id == product_id)
+        )
+        item = result.scalars().first()
+        if item:
+            await session.delete(item)
+            await session.commit()
+            return False
+        else:
+            session.add(Wishlist(user_id=user_id, product_id=product_id, shop_id=shop_id))
+            await session.commit()
+            return True
+
+
+async def get_wishlist(user_id: int, shop_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Wishlist, Product)
+            .join(Product, Wishlist.product_id == Product.id)
+            .where(Wishlist.user_id == user_id, Wishlist.shop_id == shop_id)
+        )
+        return result.all()
+
+
+async def get_order_owner_and_shop(order_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Order).where(Order.id == order_id))
+        order = result.scalars().first()
+        if order:
+            return order.user_id, order.shop_id
+        return None, None
